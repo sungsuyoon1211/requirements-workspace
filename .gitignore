@@ -1,0 +1,17 @@
+data/
+team-data/
+ai-local/
+archive/
+logs/
+runtime/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+local-settings.json
+running.json
+ai-settings.json
+config.json
+performance.json
+*.log
