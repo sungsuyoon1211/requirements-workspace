@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 import project_model
 import local_ai
+import context_engine
 import requirement_levels
 
 FIELDS = ['title', 'need', 'flow', 'expected', 'scope', 'states', 'responsibility', 'exceptionDetail', 'policyDetail']
@@ -287,11 +288,12 @@ def route(h,path,body,user,store,Problem,atomic_json,now,lock):
                 sources=files(root/'sources');project=next(p for p in project_model.projects(store) if p['id']==pid)
                 related=[{k:v for k,v in r.items() if k!='readiness'} for r in store.list() if r['projectId']==pid]
                 def make_context(rollover):
-                    history=item['messages'][-4:] if rollover else item.get('carryMessages',[])+item['messages']
-                    return {'definitionLevel':level,'definitionCriteria':requirement_levels.PROFILES[level],'project':project,'sources':sources,'existingRequirements':related,'baseRequirement':item['baseRequirement'],
+                    history=item['messages']
+                    raw_context={'definitionLevel':level,'definitionCriteria':requirement_levels.PROFILES[level],'project':project,'sources':sources,'existingRequirements':related,'baseRequirement':item['baseRequirement'],
                             'draftTextLimits':{k:{'current':len(((item.get('result') or {}).get('draft') or {}).get(k,'')),'max':schema()['properties']['draft']['properties'][k].get('maxLength')} for k in FIELDS},'previousDraft':item['result'],'collectionLimits':{k:{'current':len((item.get('result') or {}).get(k,[])),'max':schema()['properties'][k].get('maxItems')} for k in DELTA_LISTS},'conversation':history+[{'role':'user','text':message}],
                             'continuation':{'continued':rollover or bool(item.get('continuedFrom')),
                                             'instruction':'최신 전체 초안과 미정 질문을 기준으로 이어간다. 이미 정한 내용을 반복 질문하지 않는다. 생략된 대화의 내용을 추측하지 않는다.'}}
+                    return context_engine.pack(raw_context,item,files(target),budget=context_engine.DEFAULT_BUDGET//2 if rollover else context_engine.DEFAULT_BUDGET,force_retrieval=rollover)
                 rollover=False
                 context=make_context(rollover)
             provider=config(store).get('provider','api')
@@ -299,7 +301,7 @@ def route(h,path,body,user,store,Problem,atomic_json,now,lock):
             contract=delta_schema() if incremental else schema()
             instructions=(PROMPT.replace('draft에는 대화로 선택한 요건의 최신 전체 초안을 담는다. 근거 없는 내용은 미정 또는 빈 값으로 둔다.',
                                           '기존 초안은 유지하고 변경된 필드만 수정한다. 근거 없는 내용은 미정 또는 빈 값으로 둔다.')+'\n'+DELTA_PROMPT) if incremental else PROMPT
-            instructions+='\n'+requirement_levels.instructions(level)
+            instructions+='\n'+requirement_levels.instructions(level)+'\n'+context_engine.INSTRUCTION
             def invoke_turn(context):
                 started=time.monotonic();raw=None;model='';outcome='error'
                 try:
@@ -319,7 +321,7 @@ def route(h,path,body,user,store,Problem,atomic_json,now,lock):
                     # Bounded local metadata only: no prompts, customer text or credentials.
                     metric={'at':now(),'provider':provider,'model':model,'level':level,'mode':'delta' if incremental else 'initial',
                             'seconds':round(time.monotonic()-started,2),'inputChars':len(json.dumps(context,ensure_ascii=False)),
-                            'outputChars':len(json.dumps(raw,ensure_ascii=False)) if raw is not None else 0,'outcome':outcome}
+                            'contextMode':context.get('contextCoverage',{}).get('mode'),'outputChars':len(json.dumps(raw,ensure_ascii=False)) if raw is not None else 0,'outcome':outcome}
                     try:
                         with lock:
                             log=store.ai_data/'performance.json'
@@ -335,7 +337,7 @@ def route(h,path,body,user,store,Problem,atomic_json,now,lock):
                 rollover=True;context=make_context(True)
                 result,model=invoke_turn(context)
             source_map={s['id']:s for s in sources}
-            result['evidence']=[e for e in result['evidence'] if e['sourceId'] in source_map and e['quote'].strip() and e['quote'] in source_map[e['sourceId']]['text']]
+            result['evidence']=[e for e in result['evidence'] if e['sourceId'] in source_map and e['quote'].strip() and e['quote'] in source_map[e['sourceId']]['text'] and any(part['id']==e['sourceId'] and e['quote'] in part['text'] for part in context['sources'])]
             with lock:
                 current=json.loads(file.read_text(encoding='utf-8'))
                 if current['version']!=item['version']: raise Problem('다른 요청이 먼저 저장되었습니다. 대화를 다시 열어 주세요.',409)
@@ -347,7 +349,8 @@ def route(h,path,body,user,store,Problem,atomic_json,now,lock):
                           'carryMessages':parent['messages'][-4:],'createdAt':now()}
                     item.pop('continuedTo',None)
                 item['messages'] += [{'role':'user','text':message},{'role':'assistant','text':result['message']}]
-                item.update(level=level,result=result,version=item['version']+1,updatedAt=now(),model=model,sourceIds=[s['id'] for s in sources])
+                report={**context.get('contextCoverage',{}),'references':[{k:v for k,v in row.items() if k!='text'} for row in context.get('retrievedContext',[])]}
+                item.update(contextReport=report,level=level,result=result,version=item['version']+1,updatedAt=now(),model=model,sourceIds=[s['id'] for s in sources])
                 if parent:
                     new_file=target/(item['id']+'.json')
                     atomic_json(new_file,item)
