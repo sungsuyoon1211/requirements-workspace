@@ -12,7 +12,7 @@ repeatCard=function(kind,row){
   const options=[{value:'',label:'연결할 요건 선택'},...localReqs().filter(r=>r.id!==active.id).map(r=>({value:r.id,label:r.title+' · '+r.id}))];
   if(row.requirementId&&!options.some(x=>x.value===row.requirementId))options.push({value:row.requirementId,label:'확인할 수 없는 요건 · '+row.requirementId});
   fields=select('연결할 요건','requirementId',options,row.requirementId||'')+select('현재 요건과의 관계','type',['선행 필요','관련'],row.type||'선행 필요')+area('연결 이유','reason',row.reason||'')+status+`<input type="hidden" name="targetVersion" value="${Number(row.targetVersion)||0}">`;
- }else fields=`<label>데이터 이름<input name="name" list="project-data-names" maxlength="200" value="${esc(row.name||'')}" placeholder="예: 회원, 주문, 결제"><span class="field-guide">같은 데이터는 목록에서 같은 이름을 선택하세요. 실제 고객 정보는 입력하지 마세요.</span></label>`+select('이 요건에서 하는 일','operation',['생성','조회','변경','삭제'],row.operation||'조회')+area('사용 내용','description',row.description||'')+status;
+ }else fields=`<label>데이터 이름<input name="name" list="project-data-names" value="${esc(row.name||'')}" placeholder="예: 회원, 주문, 결제"><span class="field-guide">같은 데이터는 목록에서 같은 이름을 선택하세요. 실제 고객 정보는 입력하지 마세요.</span></label>`+select('이 요건에서 하는 일','operation',['생성','조회','변경','삭제'],row.operation||'조회')+area('사용 내용','description',row.description||'')+status;
  return `<div class="repeat-card" data-kind="${kind}"><div class="row spread"><strong>${defs[kind].title}</strong><button type="button" class="quiet" data-remove>항목 삭제</button></div><div class="grid2">${fields}</div></div>`;
 };
 const connectionEditorValues=editorValues;
@@ -71,3 +71,4 @@ function connectionHome(){
  const rows=localReqs();$('#content').innerHTML=`<div class="hero"><div><div class="eyebrow">CONNECTIONS</div><h1>변경 전에, 연결된 요건을 확인하세요</h1><p>요건의 선행 관계와 같은 데이터·연동을 사용하는 요건을 함께 살펴봅니다.</p></div></div><section class="panel section formstack"><label>변경하거나 검토할 요건<select id="impact-requirement"><option value="">요건 선택</option>${rows.map(r=>`<option value="${r.id}">${esc(r.title)}</option>`).join('')}</select></label><div id="impact-result"><p class="muted">요건을 선택하면 직접 연결과 간접 영향 후보를 표시합니다.</p></div></section>`;
  $('#impact-requirement').onchange=e=>{const item=rows.find(r=>r.id===e.target.value);$('#impact-result').innerHTML=item?`<div class="row spread"><h2>${esc(item.title)}</h2><button id="edit-connections">연결 정보 검토</button></div>${connectionImpactHtml(item)}`:'요건을 선택하세요.';if(item)$('#edit-connections').onclick=()=>edit(item)};
 }
+

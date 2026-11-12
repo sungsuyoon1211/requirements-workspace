@@ -57,8 +57,8 @@ def password_hash(password, salt=None):
 def user_public(user):
     return {k: user[k] for k in ['username', 'name', 'role']}
 
-def text(value, limit=12000):
-    if not isinstance(value, str) or len(value) > limit:
+def text(value, limit=None):
+    if not isinstance(value, str) or (limit is not None and len(value) > limit):
         raise Problem('입력 형식 또는 글자 수를 확인해 주세요.')
     return value.strip()
 
@@ -76,7 +76,7 @@ def validate(payload, users):
               'flow', 'cta', 'scope', 'excluded', 'object', 'states', 'dataFlow',
               'responsibility', 'approvalFlow', 'exceptions', 'migration', 'risk',
               'changeReason', 'changeImpact', 'changeApprover', 'design', 'successMetric']
-    item = {key: text(payload.get(key, ''),project_model.NARRATIVE_LIMIT if key in project_model.NARRATIVE_FIELDS else 12000) for key in fields}
+    item = {key: text(payload.get(key, '')) for key in fields}
     for key, label in [('title', '요건 제목'), ('project', '프로젝트'), ('owner', '담당자'),
                        ('need', '필요한 이유'), ('nextAction', '다음 할 일')]:
         if not item[key]:
@@ -98,8 +98,8 @@ def validate(payload, users):
     }
     for key, keys in schemas.items():
         rows = payload.get(key, [])
-        if not isinstance(rows, list) or (key != 'scenarios' and len(rows) > 100):
-            raise Problem('상세 항목은 목록이어야 하며 BDD 외 항목은 종류별 최대 100개입니다.')
+        if not isinstance(rows, list):
+            raise Problem('상세 항목은 목록이어야 합니다.')
         item[key] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -373,8 +373,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Content-Type','').split(';')[0] != 'application/json':
             raise Problem('JSON 요청이 필요합니다.', 415)
         size = int(self.headers.get('Content-Length','0'))
-        limit = 16_000_000 if re.fullmatch(r'/api/requirements(?:/REQ-[A-F0-9]{12})?',urlsplit(self.path).path) else 1_000_000
-        if not 0 < size <= limit:
+        content_path = urlsplit(self.path).path
+        content_request = content_path.startswith(('/api/requirements', '/api/projects/')) or content_path == '/api/projects'
+        limit = None if content_request else 1_000_000
+        if size <= 0 or (limit is not None and size > limit):
             raise Problem('요청 크기를 확인해 주세요.', 413)
         value = json.loads(self.rfile.read(size))
         if not isinstance(value, dict):
@@ -541,3 +543,4 @@ def main():
     finally: server.server_close()
 
 if __name__=='__main__': main()
+

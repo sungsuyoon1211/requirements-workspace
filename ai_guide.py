@@ -38,12 +38,12 @@ draft의 flow는 사용자 행동 → 시스템 처리 → 화면 결과 순서�
 bdd는 정상·실패·경계 상황 중 해당하는 핵심 시나리오를 우선하며, given은 조건, when은 행동 하나, then은 관찰 가능한 결과로 작성한다. 합의되지 않은 상황/행동/결과 예시를 제안한다. 반환은 지정된 JSON만 사용한다.'''
 
 def schema():
-    string = {'type':'string','maxLength':12000}
+    string = {'type':'string'}
     def obj(properties):
         return {'type':'object','properties':properties,'required':list(properties),'additionalProperties':False}
-    def arr(item,limit=30): return {'type':'array','items':item,**({'maxItems':limit} if limit is not None else {})}
+    def arr(item,limit=None): return {'type':'array','items':item}
     return obj({'message':string,'choices':arr(string),'candidates':arr(string),'gaps':arr(string,100),
-        'draft':obj({k:{'type':'string','maxLength':project_model.NARRATIVE_LIMIT if k in project_model.NARRATIVE_FIELDS else 12000} for k in FIELDS}),
+        'draft':obj({k:{'type':'string'} for k in FIELDS}),
         'bdd':arr(obj({k:string for k in ['given','when','then']}),None),
         'evidence':arr(obj({'sourceId':string,'quote':string})),
         'relations':arr(obj({k:string for k in ['requirementId','type','reason']}),100),
@@ -53,7 +53,7 @@ def schema():
 DELTA_LISTS = ['candidates','gaps','bdd','evidence',*CONNECTION_FIELDS]
 DELTA_PROMPT = '''이번 요청은 변경분 갱신 모드다. 전체 초안을 다시 반환하지 않는다.
 previousDraft는 서버에 보관된 최신 전체 초안이다. 이번 답변에 직접 영향받은 항목만 수정한다.
-draftTextLimits는 필드별 누적 글자 수와 저장 한도다. 반복 설명을 추가하지 말고 해당 문장만 갱신한다. 한도에 가까워지면 기존 합의를 삭제하거나 임의 요약하지 말고 현재 요건을 등록한 뒤 별도 요건으로 나눌지 사용자에게 안내한다.
+draftTextLimits는 필드별 누적 글자 수다. max가 null이면 앱의 저장 글자 수 제한이 없다. 반복 설명을 추가하지 말고 해당 문장만 갱신한다. 기존 합의를 삭제하거나 임의 요약하지 않는다.
 collectionLimits는 목록별 현재 개수와 저장 한도다. max가 null이면 개수 제한이 없으며 BDD는 개수 때문에 삭제하거나 나누지 않는다. 같은 조건의 기존 BDD·연동·관계가 있으면 새로 추가하지 말고 해당 인덱스를 수정한다. 한도 때문에 기존 합의나 예외를 삭제하지 않는다. 실제로 별도 요건으로 나눠야 할 만큼 항목이 많으면 message에서 안내하고 초안은 보존한다.
 빈 필드에 처음 내용을 채울 때는 draftChanges에 field와 value를 반환한다. 이미 내용이 있는 필드는 반드시 draftEdits로 수정한다.
 draftEdits는 field, before, after로 구성한다. before는 previousDraft 해당 필드에서 정확히 한 번 나타나는 기존 문장이고 after는 바뀐 문장이다. before에 없는 문장을 꾸미거나 줄임표로 생략하지 않는다. 문장을 추가할 때는 기존 끝 문장을 before로, 그 문장과 추가 문장을 합친 값을 after로 반환한다.
@@ -64,10 +64,10 @@ message는 반영 내용 1문장과 다음 핵심 질문 하나로 짧게 쓴다
 
 def delta_schema():
     def obj(properties): return {'type':'object','properties':properties,'required':list(properties),'additionalProperties':False}
-    def arr(items,limit): return {'type':'array','items':items,**({'maxItems':limit} if limit is not None else {})}
-    properties={'message':{'type':'string','maxLength':2400},'choices':arr({'type':'string','maxLength':1000},3),
-                'draftChanges':arr(obj({'field':{'type':'string','enum':FIELDS},'value':{'type':'string','maxLength':project_model.NARRATIVE_LIMIT}}),len(FIELDS)),
-                'draftEdits':arr(obj({'field':{'type':'string','enum':FIELDS},'before':{'type':'string','maxLength':project_model.NARRATIVE_LIMIT},'after':{'type':'string','maxLength':project_model.NARRATIVE_LIMIT}}),30)}
+    def arr(items,limit=None): return {'type':'array','items':items}
+    properties={'message':{'type':'string'},'choices':arr({'type':'string'},3),
+                'draftChanges':arr(obj({'field':{'type':'string','enum':FIELDS},'value':{'type':'string'}}),len(FIELDS)),
+                'draftEdits':arr(obj({'field':{'type':'string','enum':FIELDS},'before':{'type':'string'},'after':{'type':'string'}}),30)}
     full=schema()['properties']
     for key in DELTA_LISTS:
         limit=full[key].get('maxItems')
@@ -144,7 +144,7 @@ def status(store):
 
 def valid_output(v,s):
     if isinstance(v,dict) and 'draft' in s.get('properties',{}): v={**{k:[] for k in CONNECTION_FIELDS},**v}
-    if s['type']=='string': return isinstance(v,str) and len(v)<=s.get('maxLength',12000) and ('enum' not in s or v in s['enum'])
+    if s['type']=='string': return isinstance(v,str) and ('maxLength' not in s or len(v)<=s['maxLength']) and ('enum' not in s or v in s['enum'])
     if s['type']=='integer': return type(v) is int and v>=s.get('minimum',0)
     if s['type']=='array': return isinstance(v,list) and ('maxItems' not in s or len(v)<=s['maxItems']) and all(valid_output(x,s['items']) for x in v)
     return isinstance(v,dict) and set(v)==set(s['properties']) and all(valid_output(v[k],ss) for k,ss in s['properties'].items())
@@ -157,7 +157,7 @@ def output_issues(value,s,path='응답'):
         return [] if type(value) is int and value>=s.get('minimum',0) else [path+': 목록 위치가 올바르지 않습니다.']
     if expected=='string':
         if not isinstance(value,str): return [path+': 문자열이 필요합니다.']
-        if len(value)>s.get('maxLength',12000): return [path+f': {len(value)}자, 최대 {s.get("maxLength",12000)}자입니다.']
+        if 'maxLength' in s and len(value)>s['maxLength']: return [path+f': {len(value)}자, 최대 {s.get("maxLength",12000)}자입니다.']
         if 'enum' in s and value not in s['enum']: return [path+': 허용되지 않은 항목입니다.']
         return []
     if expected=='array':
@@ -178,7 +178,7 @@ def ensure_output(value,Problem):
 def call_model(key, model, context, Problem, output_schema=None, instructions=None):
     if not key or not model: raise Problem('관리자가 AI 연결을 먼저 설정해 주세요. 자료 준비는 계속할 수 있습니다.',503)
     payload={'model':model,'store':False,'instructions':instructions or PROMPT,'input':json.dumps(context,ensure_ascii=False),
-        'max_output_tokens':6000,'text':{'format':{'type':'json_schema','name':'requirement_guide','strict':True,'schema':output_schema or schema()}}}
+        'text':{'format':{'type':'json_schema','name':'requirement_guide','strict':True,'schema':output_schema or schema()}}}
     request=urllib.request.Request('https://api.openai.com/v1/responses',data=json.dumps(payload).encode(),
         headers={'Content-Type':'application/json','Authorization':'Bearer '+key},method='POST')
     try:
@@ -210,16 +210,14 @@ def extract(body,Problem):
     name=body.get('fileName','').lower()
     try:
         raw=base64.b64decode(body['fileData'],validate=True)
-        if len(raw)>500_000: raise ValueError()
         if name.endswith(('.txt','.md')): return raw.decode('utf-8-sig')
         if name.endswith('.docx'):
             with zipfile.ZipFile(io.BytesIO(raw)) as z:
                 info=z.getinfo('word/document.xml')
-                if info.file_size>2_000_000: raise ValueError()
                 tree=ET.fromstring(z.read(info))
                 ns={'w':'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
                 return '\n'.join(''.join(p.itertext()) for p in tree.findall('.//w:p',ns))
-    except (ValueError,KeyError,UnicodeError,zipfile.BadZipFile,ET.ParseError): raise Problem('읽을 수 없는 파일입니다. UTF-8 텍스트 또는 500KB 이하 DOCX를 사용해 주세요.')
+    except (ValueError,KeyError,UnicodeError,zipfile.BadZipFile,ET.ParseError): raise Problem('읽을 수 없는 파일입니다. UTF-8 텍스트 또는 DOCX를 사용해 주세요.')
     raise Problem('현재 TXT·MD·DOCX를 지원합니다. PDF·HWP는 필요한 내용을 복사해 붙여 넣어 주세요.')
 
 def route(h,path,body,user,store,Problem,atomic_json,now,lock):
@@ -260,10 +258,8 @@ def route(h,path,body,user,store,Problem,atomic_json,now,lock):
         if h.command=='GET': return h.send(files(target))
         if h.command=='POST':
             name=body.get('name','');content=extract(body,Problem)
-            if not isinstance(name,str) or not 1<=len(name.strip())<=200 or not isinstance(content,str) or not 1<=len(content.strip())<=60000: raise Problem('자료 이름과 본문을 입력해 주세요. 자료당 최대 6만 자입니다.')
+            if not isinstance(name,str) or not name.strip() or not isinstance(content,str) or not content.strip(): raise Problem('자료 이름과 본문을 입력해 주세요.')
             with lock:
-                existing=files(target)
-                if len(existing)>=20 or sum(len(x['text']) for x in existing)+len(content)>120000: raise Problem('프로젝트 자료는 최대 20개·총 12만 자입니다. 핵심 자료를 정리해 주세요.')
                 item={'id':'SRC-'+secrets.token_hex(6).upper(),'name':name.strip(),'text':content.strip(),'createdBy':user['username'],'createdAt':now()}
                 target.mkdir(parents=True,exist_ok=True);atomic_json(target/(item['id']+'.json'),item)
             return h.send(item,201)
@@ -287,21 +283,17 @@ def route(h,path,body,user,store,Problem,atomic_json,now,lock):
                 if body.get('version')!=item['version']: raise Problem('다른 창에서 대화가 변경되었습니다. 다시 열어 주세요.',409)
                 level=requirement_levels.validate(body.get('level',item.get('level',requirement_levels.DEFAULT)),Problem)
                 message=body.get('message','')
-                if not isinstance(message,str) or not 1<=len(message.strip())<=6000: raise Problem('질문 또는 답변을 6천 자 이내로 입력해 주세요.')
+                if not isinstance(message,str) or not message.strip(): raise Problem('질문 또는 답변을 입력해 주세요.')
                 sources=files(root/'sources');project=next(p for p in project_model.projects(store) if p['id']==pid)
                 related=[{k:v for k,v in r.items() if k!='readiness'} for r in store.list() if r['projectId']==pid]
                 def make_context(rollover):
                     history=item['messages'][-4:] if rollover else item.get('carryMessages',[])+item['messages']
                     return {'definitionLevel':level,'definitionCriteria':requirement_levels.PROFILES[level],'project':project,'sources':sources,'existingRequirements':related,'baseRequirement':item['baseRequirement'],
-                            'draftTextLimits':{k:{'current':len(((item.get('result') or {}).get('draft') or {}).get(k,'')),'max':schema()['properties']['draft']['properties'][k]['maxLength']} for k in FIELDS},'previousDraft':item['result'],'collectionLimits':{k:{'current':len((item.get('result') or {}).get(k,[])),'max':schema()['properties'][k].get('maxItems')} for k in DELTA_LISTS},'conversation':history+[{'role':'user','text':message}],
+                            'draftTextLimits':{k:{'current':len(((item.get('result') or {}).get('draft') or {}).get(k,'')),'max':schema()['properties']['draft']['properties'][k].get('maxLength')} for k in FIELDS},'previousDraft':item['result'],'collectionLimits':{k:{'current':len((item.get('result') or {}).get(k,[])),'max':schema()['properties'][k].get('maxItems')} for k in DELTA_LISTS},'conversation':history+[{'role':'user','text':message}],
                             'continuation':{'continued':rollover or bool(item.get('continuedFrom')),
                                             'instruction':'최신 전체 초안과 미정 질문을 기준으로 이어간다. 이미 정한 내용을 반복 질문하지 않는다. 생략된 대화의 내용을 추측하지 않는다.'}}
-                rollover=len(item['messages'])>=60
+                rollover=False
                 context=make_context(rollover)
-                if len(json.dumps(context,ensure_ascii=False))>240000:
-                    rollover=True;context=make_context(True)
-                if len(json.dumps(context,ensure_ascii=False))>240000:
-                    raise Problem('대화 이력을 줄여도 자료·요건의 분석 범위가 큽니다. 프로젝트 자료를 핵심 내용으로 정리해 주세요. 기존 초안과 대화는 유지됩니다.')
             provider=config(store).get('provider','api')
             incremental=isinstance(item.get('result'),dict)
             contract=delta_schema() if incremental else schema()
@@ -341,7 +333,6 @@ def route(h,path,body,user,store,Problem,atomic_json,now,lock):
                 context_limit=any(t in reason for t in ['context window','context length','context_length_exceeded','prompt is too long','prompt too long','컨텍스트 한도','컨텍스트 길이'])
                 if rollover or not item['messages'] or not context_limit: raise
                 rollover=True;context=make_context(True)
-                if len(json.dumps(context,ensure_ascii=False))>240000: raise
                 result,model=invoke_turn(context)
             source_map={s['id']:s for s in sources}
             result['evidence']=[e for e in result['evidence'] if e['sourceId'] in source_map and e['quote'].strip() and e['quote'] in source_map[e['sourceId']]['text']]

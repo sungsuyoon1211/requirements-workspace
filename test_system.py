@@ -282,7 +282,7 @@ class SystemTest(unittest.TestCase):
         with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',side_effect=app.Problem('연결 실패',502)):
             self.req(base+'/'+session['id'],'POST',{'version':0,'message':'추가','level':'HARD'},502)
         self.assertEqual(json.loads(file.read_text()),session)
-        with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',return_value=full) as model:
+        with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',side_effect=[app.Problem('context window exceeded',502),full]) as model:
             saved=self.req(base+'/'+session['id'],'POST',{'version':0,'message':'추가'})
         self.assertEqual(saved['level'],'MIDIUN')
         self.assertNotEqual(saved['id'],session['id'])
@@ -424,16 +424,38 @@ class SystemTest(unittest.TestCase):
         self.assertEqual(saved['messages'][0]['text'],'답변')
         self.assertEqual(len(self.req(base)[0]['result']['gaps']),35)
 
+    def test_unlimited_content_roundtrips_without_count_based_rollover(self):
+        p,r=self.make_project_requirement();base='/projects/'+p['id']+'/guide/'
+        # Cross the former file, HTTP request, source text/count/total ceilings.
+        import base64
+        text='자료'*210000
+        source=self.req(base+'sources','POST',{'name':'큰 자료','fileName':'large.txt','fileData':base64.b64encode(text.encode()).decode()},201)
+        self.assertEqual(source['text'],text)
+        for i in range(21): self.req(base+'sources','POST',{'name':str(i),'text':'추가'},201)
+        self.assertEqual(len(self.req(base+'sources')),22)
+        r.update(status='수집',decisions=[{'id':f'D-{i}','question':f'질문 {i}','status':'미정','owner':'','due':''} for i in range(250)],expected='긴'*250000)
+        saved=self.req('/requirements','POST',r,201)
+        self.assertEqual(len(self.req('/requirements/'+saved['id'])['decisions']),250)
+        session=self.req(base+'sessions','POST',{},201)
+        session['messages']=[{'role':'user','text':str(i)} for i in range(1000)]
+        file=Path(self.tmp.name)/'archive/projects'/p['id']/'guide/sessions'/(session['id']+'.json');app.atomic_json(file,session)
+        result={'message':'질문','choices':[],'candidates':[],'gaps':[f'질문 {i}' for i in range(250)],'draft':{k:'' for k in app.ai_guide.FIELDS},'bdd':[],'evidence':[]}
+        with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',return_value=result) as model:
+            continued=self.req(base+'sessions/'+session['id'],'POST',{'version':0,'message':'답'*7000})
+        self.assertEqual(continued['id'],session['id'])
+        self.assertEqual(len(continued['messages']),1002)
+        self.assertEqual(model.call_args.args[2]['sources'][0]['text'] if model.call_args.args[2]['sources'][0]['id']==source['id'] else next(x['text'] for x in model.call_args.args[2]['sources'] if x['id']==source['id']),text)
+        self.assertEqual(len(model.call_args.args[2]['conversation']),1001)
+        self.assertEqual(len(continued['result']['gaps']),250)
+
     def test_ai_schema_limits_match_validator(self):
         schema=app.ai_guide.schema()
         result={'message':'안내','choices':[],'candidates':[],'gaps':['질문']*100,'draft':{k:'' for k in app.ai_guide.FIELDS},'bdd':[],'evidence':[]}
-        self.assertEqual(schema['properties']['gaps']['maxItems'],100)
+        self.assertNotIn('maxItems',schema['properties']['gaps'])
         self.assertTrue(app.ai_guide.valid_output(result,schema))
         result['gaps'].append('추가 질문')
-        self.assertFalse(app.ai_guide.valid_output(result,schema))
-        with self.assertRaises(app.Problem) as err:app.ai_guide.ensure_output(result,app.Problem)
-        self.assertIn('gaps: 101개',err.exception.message)
-        self.assertNotIn('추가 질문',err.exception.message)
+        self.assertTrue(app.ai_guide.valid_output(result,schema))
+        app.ai_guide.ensure_output(result,app.Problem)
         result['gaps']=[];result['draft']['need']=None
         self.assertFalse(app.ai_guide.valid_output(result,schema))
         self.assertIn('need',app.ai_guide.output_issues(result,schema)[0])
@@ -490,7 +512,7 @@ class SystemTest(unittest.TestCase):
         file=Path(self.tmp.name)/'archive/projects'/p['id']/'guide/sessions'/(session['id']+'.json')
         app.atomic_json(file,session)
         delta=self.empty_delta()
-        with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',return_value=delta) as model:
+        with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',side_effect=[app.Problem('context window exceeded',502),delta]) as model:
             saved=self.req(base+'sessions/'+session['id'],'POST',{'version':30,'message':'외국인도 휴대폰 인증부터'})
         context=model.call_args.args[2]
         self.assertEqual(len(context['conversation']),5)
@@ -613,7 +635,7 @@ class SystemTest(unittest.TestCase):
         req=self.req('/requirements','POST',dict(r,scenarios=scenarios),201)
         self.assertEqual(len(req['scenarios']),31)
         for key in ['relations','dataUses','interfaces']:
-            self.assertEqual(app.ai_guide.schema()['properties'][key]['maxItems'],100)
+            self.assertNotIn('maxItems',app.ai_guide.schema()['properties'][key])
         hundred=copy.deepcopy(saved['result']);hundred['bdd']=[previous['bdd'][0]]*100
         self.assertTrue(app.ai_guide.valid_output(hundred,app.ai_guide.schema()))
         before=copy.deepcopy(hundred)
@@ -634,15 +656,15 @@ class SystemTest(unittest.TestCase):
         expected=original[:-7]+delta['draftEdits'][0]['after']
         self.assertEqual(saved['result']['draft']['expected'],expected)
         self.assertGreater(len(expected),100000)
-        self.assertEqual(model.call_args.args[2]['draftTextLimits']['expected']['max'],200000)
+        self.assertIsNone(model.call_args.args[2]['draftTextLimits']['expected']['max'])
         created=self.req('/requirements','POST',dict(r,expected=expected,flow='흐'*200000),201)
         self.assertEqual(created['expected'],expected)
         self.assertEqual(self.req('/requirements/'+created['id'])['flow'],'흐'*200000)
         updated=self.req('/requirements/'+created['id'],'PUT',dict(created,expected='가'*200000))
         self.assertEqual(updated['expected'],'가'*200000)
         too_long=copy.deepcopy(saved['result']);too_long['draft']['expected']='가'*200001
-        with self.assertRaises(app.Problem):app.ai_guide.ensure_output(too_long,app.Problem)
-        self.req('/requirements','POST',dict(r,expected='가'*200001),400)
+        app.ai_guide.ensure_output(too_long,app.Problem)
+        self.req('/requirements','POST',dict(r,expected='가'*200001),201)
 
     def test_project_markdown_zip(self):
         p,r=self.make_project_requirement();url='/projects/'+p['id']+'/export'
