@@ -230,6 +230,65 @@ class SystemTest(unittest.TestCase):
         self.req('/settings','PUT',{'archive':str(Path(self.tmp.name))},400)
 
 
+    def test_definition_levels_validate_and_reach_initial_and_delta_calls(self):
+        p,r=self.make_project_requirement();base='/projects/'+p['id']+'/guide/sessions'
+        self.req(base,'POST',{'level':'INVALID'},400)
+        self.req(base,'POST',{'level':[]},400)
+        default=self.req(base,'POST',{},201)
+        self.assertEqual(default['level'],'MIDIUN')
+        full={'message':'완료 결과는 무엇인가요?','choices':[],'candidates':[],'gaps':[],
+              'draft':{k:'' for k in app.ai_guide.FIELDS},'bdd':[],'evidence':[]}
+        full['draft']['title']='주문 취소'
+        for level in ['ROW','MIDIUN','HARD','VERYHARD']:
+            with self.subTest(level=level):
+                session=self.req(base,'POST',{'level':level},201)
+                with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',return_value=full) as model:
+                    saved=self.req(base+'/'+session['id'],'POST',{'version':0,'message':'주문 취소'})
+                self.assertEqual(saved['level'],level)
+                self.assertEqual(model.call_args.args[2]['definitionLevel'],level)
+                self.assertEqual(model.call_args.args[2]['definitionCriteria'],app.ai_guide.requirement_levels.PROFILES[level])
+                self.assertIn('요건 정의 레벨: '+level,model.call_args.kwargs['instructions'])
+                self.req(base+'/'+session['id'],'POST',{'version':1,'message':'답','level':'bad'},400)
+                with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',return_value=self.empty_delta()) as model:
+                    changed=self.req(base+'/'+session['id'],'POST',{'version':1,'message':'쉽게 진행','level':'ROW'})
+                self.assertEqual(changed['level'],'ROW')
+                self.assertEqual(changed['result']['draft']['title'],'주문 취소')
+                self.assertIn('요건 정의 레벨: ROW',model.call_args.kwargs['instructions'])
+                self.assertEqual(next(x for x in self.req(base) if x['id']==session['id'])['level'],'ROW')
+
+    def test_definition_levels_apply_to_installed_ai_providers(self):
+        p,r=self.make_project_requirement();base='/projects/'+p['id']+'/guide/sessions'
+        full={'message':'질문','choices':[],'candidates':[],'gaps':[],
+              'draft':{k:'' for k in app.ai_guide.FIELDS},'bdd':[],'evidence':[]}
+        for provider in ['codex','claude']:
+            for level in ['ROW','MIDIUN','HARD','VERYHARD']:
+                with self.subTest(provider=provider,level=level):
+                    app.atomic_json(self.server.store.ai_data/'ai-settings.json',{'provider':provider})
+                    session=self.req(base,'POST',{'level':level},201)
+                    with patch.object(app.ai_guide.local_ai,'invoke',return_value=full) as invoke:
+                        saved=self.req(base+'/'+session['id'],'POST',{'version':0,'message':'시작'})
+                    self.assertEqual(invoke.call_args.args[1]['definitionLevel'],level)
+                    self.assertIn('요건 정의 레벨: '+level,invoke.call_args.args[2])
+                    self.assertEqual(saved['level'],level)
+
+    def test_definition_level_legacy_rollover_and_failure_preservation(self):
+        p,r=self.make_project_requirement();base='/projects/'+p['id']+'/guide/sessions'
+        session=self.req(base,'POST',{},201)
+        file=Path(self.tmp.name)/'archive/projects'/p['id']/'guide/sessions'/(session['id']+'.json')
+        session.pop('level');session['messages']=[{'role':'user','text':'기존 답'}]*60
+        app.atomic_json(file,session)
+        full={'message':'질문','choices':[],'candidates':[],'gaps':[],
+              'draft':{k:'' for k in app.ai_guide.FIELDS},'bdd':[],'evidence':[]}
+        with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',side_effect=app.Problem('연결 실패',502)):
+            self.req(base+'/'+session['id'],'POST',{'version':0,'message':'추가','level':'HARD'},502)
+        self.assertEqual(json.loads(file.read_text()),session)
+        with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',return_value=full) as model:
+            saved=self.req(base+'/'+session['id'],'POST',{'version':0,'message':'추가'})
+        self.assertEqual(saved['level'],'MIDIUN')
+        self.assertNotEqual(saved['id'],session['id'])
+        self.assertEqual(saved['continuedFrom'],session['id'])
+        self.assertEqual(model.call_args.args[2]['definitionLevel'],'MIDIUN')
+
     def test_ai_sources_and_private_sessions(self):
         p,r=self.make_project_requirement(); base='/projects/'+p['id']+'/guide/'
         source=self.req(base+'sources','POST',{'name':'RFP 1장','text':'고객은 주문을 취소할 수 있다.'},201)
@@ -624,3 +683,4 @@ class SystemTest(unittest.TestCase):
         self.assertIn('SC-1101',app.markdown(updated))
 
 if __name__=='__main__':unittest.main(verbosity=2)
+
