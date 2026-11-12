@@ -6,7 +6,7 @@ import re
 import secrets
 from pathlib import Path
 
-NARRATIVE_LIMIT = 200000
+NARRATIVE_LIMIT = None
 NARRATIVE_FIELDS = {'need','flow','scope','states','responsibility','expected','exceptionDetail','policyDetail'}
 
 def legacy_id(name):
@@ -38,7 +38,7 @@ def save_project(store,payload,user,pid,Problem,atomic_json,now):
     item={}
     for key in ['name','description','defaultOwner','commonRules','qualityCriteria']:
         value=payload.get(key,'')
-        if not isinstance(value,str) or len(value)>12000: raise Problem('프로젝트 입력 형식을 확인해 주세요.')
+        if not isinstance(value,str): raise Problem('프로젝트 입력 형식을 확인해 주세요.')
         item[key]=value.strip()
     if not item['name']: raise Problem('프로젝트 이름을 입력해 주세요.')
     if item['defaultOwner'] not in [u['username'] for u in store.config()['users']]: raise Problem('기본 담당자를 선택해 주세요.')
@@ -55,7 +55,7 @@ def normalize(payload,item,Problem):
     item['schemaVersion']=2
     for key,fields in {'relations':['requirementId','type','reason','status'], 'dataUses':['name','operation','description','status']}.items():
         rows=payload.get(key,[])
-        if not isinstance(rows,list) or len(rows)>100: raise Problem('연결 정보는 종류별 최대 100개입니다.')
+        if not isinstance(rows,list): raise Problem('연결 정보는 목록이어야 합니다.')
         item[key]=[]
         seen=set()
         for row in rows:
@@ -63,7 +63,7 @@ def normalize(payload,item,Problem):
             entry={}
             for field in fields:
                 value=row.get(field,'제안' if field=='status' else '')
-                if not isinstance(value,str) or len(value)>12000: raise Problem('연결 정보 입력 형식을 확인해 주세요.')
+                if not isinstance(value,str): raise Problem('연결 정보 입력 형식을 확인해 주세요.')
                 entry[field]=value.strip()
             if entry['status'] not in ['제안','확인']: raise Problem('연결 정보의 확인 상태를 선택해 주세요.')
             if key=='relations':
@@ -74,7 +74,7 @@ def normalize(payload,item,Problem):
                 identity=(entry['requirementId'],entry['type'])
             else:
                 entry['name']=' '.join(entry['name'].split())
-                if not entry['name'] or len(entry['name'])>200 or entry['operation'] not in ['생성','조회','변경','삭제']: raise Problem('데이터 이름과 사용 방식을 선택해 주세요.')
+                if not entry['name'] or entry['operation'] not in ['생성','조회','변경','삭제']: raise Problem('데이터 이름과 사용 방식을 선택해 주세요.')
                 identity=(entry['name'].casefold(),entry['operation'])
             if identity in seen: raise Problem('같은 연결 정보가 중복되었습니다.')
             seen.add(identity);item[key].append(entry)
@@ -82,7 +82,7 @@ def normalize(payload,item,Problem):
     if item['kind'] not in ['화면·문구 수정','기능 변경','업무·정책 변경']: raise Problem('요건 유형을 확인해 주세요.')
     for key in ['expected','exceptionDetail','policyDetail']:
         value=payload.get(key,'')
-        if not isinstance(value,str) or len(value)>NARRATIVE_LIMIT: raise Problem(f'{key}: 최대 {NARRATIVE_LIMIT}자까지 저장할 수 있습니다.')
+        if not isinstance(value,str): raise Problem(f'{key}: 문자열을 입력해 주세요.')
         item[key]=value.strip()
     questions=payload.get('questions',{})
     if not isinstance(questions,dict): raise Problem('확인 질문 형식을 확인해 주세요.')
@@ -96,7 +96,7 @@ def normalize(payload,item,Problem):
     item['verification']={}
     for key in ['status','actual','tester','date','evidence']:
         value=verification.get(key,'미실시' if key=='status' else '')
-        if not isinstance(value,str) or len(value)>12000: raise Problem('검수 기록 형식을 확인해 주세요.')
+        if not isinstance(value,str): raise Problem('검수 기록 형식을 확인해 주세요.')
         item['verification'][key]=value.strip()
     if item['verification']['status'] not in ['미실시','통과','실패','보류']: raise Problem('검수 상태를 확인해 주세요.')
 
@@ -150,3 +150,4 @@ def validate_relations(store,item,rid,Problem):
                 if edge['type']=='선행 필요' and edge['status']=='확인': visit(edge['requirementId'],path|{node})
             visited.add(node)
         visit(rid,set())
+
