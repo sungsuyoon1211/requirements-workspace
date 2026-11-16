@@ -444,8 +444,9 @@ class SystemTest(unittest.TestCase):
             continued=self.req(base+'sessions/'+session['id'],'POST',{'version':0,'message':'답'*7000})
         self.assertEqual(continued['id'],session['id'])
         self.assertEqual(len(continued['messages']),1002)
-        self.assertEqual(model.call_args.args[2]['sources'][0]['text'] if model.call_args.args[2]['sources'][0]['id']==source['id'] else next(x['text'] for x in model.call_args.args[2]['sources'] if x['id']==source['id']),text)
-        self.assertEqual(len(model.call_args.args[2]['conversation']),1001)
+        self.assertEqual(next(x['text'] for x in self.req(base+'sources') if x['id']==source['id']),text)
+        self.assertEqual(model.call_args.args[2]['contextCoverage']['mode'],'retrieval')
+        self.assertEqual(len(model.call_args.args[2]['conversation']),8)
         self.assertEqual(len(continued['result']['gaps']),250)
 
     def test_ai_schema_limits_match_validator(self):
@@ -515,7 +516,8 @@ class SystemTest(unittest.TestCase):
         with patch.object(app.ai_guide,'credentials',return_value=('mock','mock')),patch.object(app.ai_guide,'call_model',side_effect=[app.Problem('context window exceeded',502),delta]) as model:
             saved=self.req(base+'sessions/'+session['id'],'POST',{'version':30,'message':'외국인도 휴대폰 인증부터'})
         context=model.call_args.args[2]
-        self.assertEqual(len(context['conversation']),5)
+        self.assertEqual(len(context['conversation']),8)
+        self.assertEqual(context['contextCoverage']['mode'],'retrieval')
         self.assertEqual(context['previousDraft']['gaps'],['미정 정책'])
         self.assertEqual(context['conversation'][-1]['text'],'외국인도 휴대폰 인증부터')
         self.assertNotEqual(saved['id'],session['id'])
